@@ -124,8 +124,8 @@ class SJRMapper:
                     continue
 
                 # Verificar el primer año y el último año disponible en el SJR
-                min_year = available_sjr_years[0]   # Ej. 1999
-                max_year = available_sjr_years[-1]  # Ej. 2024
+                min_year = available_sjr_years[0]
+                max_year = available_sjr_years[-1]
 
                 if pub_year <= min_year:
                     matched_year = min_year

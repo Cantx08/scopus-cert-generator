@@ -5,10 +5,16 @@ Servicio para generar certificados en formato PDF.
 import io
 import os
 import logging
+from collections import Counter
+import matplotlib
+# Usar el backend 'Agg' es crucial en Azure Functions para evitar errores de hilos GUI
+matplotlib.use('Agg') 
+import matplotlib.pyplot as plt
+
 from reportlab.lib.pagesizes import A4
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.enums import TA_LEFT, TA_JUSTIFY
+from reportlab.lib.enums import TA_LEFT, TA_JUSTIFY, TA_CENTER
 from reportlab.lib import colors
 from reportlab.lib.units import cm
 from pypdf import PdfReader, PdfWriter
@@ -48,6 +54,8 @@ class CertificadoPDFService:
                                   spaceAfter=10, spaceBefore=10, fontName='Helvetica-Bold'))
         styles.add(ParagraphStyle(name='Justified', parent=styles['Normal'], fontSize=11,
                                   alignment=TA_JUSTIFY, spaceAfter=6, fontName='Times-Roman'))
+        styles.add(ParagraphStyle(name='CaptionCenter', parent=styles['Normal'], alignment=TA_CENTER,
+                                  fontSize=10, textColor=colors.black, fontName='Times-Roman'))
         styles.add(ParagraphStyle(name='Publication', parent=styles['Normal'], fontSize=11, leftIndent=20,
                                   spaceAfter=8, alignment=TA_JUSTIFY, fontName='Times-Roman'))
         styles.add(ParagraphStyle(name='Signature', parent=styles['Normal'], fontSize=11, alignment=TA_LEFT,
@@ -56,7 +64,7 @@ class CertificadoPDFService:
                                   alignment=TA_LEFT, fontName='Times-Roman', textColor=colors.black))
         return styles
 
-    def generate_pdf(self, author: dict, metadata: dict, publications: list, is_draft: bool) -> bytes:
+    def generate_pdf(self, author: dict, metadata: dict, publications: list, subject_areas: list, is_draft: bool) -> bytes:
         """Genera el PDF del certificado o borrador."""
         self.check_roles(author, metadata)
 
@@ -85,7 +93,7 @@ class CertificadoPDFService:
         story.append(Spacer(1, 20))
 
         # Información del docente
-        full_name = f"{author.get('nombres', '')} {author.get('apellidos', '')}"
+        full_name = f"{author.get('titulo', '')} {author.get('nombres', '')} {author.get('apellidos', '')}"
         department = author.get('departamento', 'Departamento no especificado')
         author_info = f"<b>{full_name}</b><br/><br/>{department}<br/><br/>Escuela Politécnica Nacional"
         story.append(Paragraph(f"<font size=12>{author_info}</font>", self.styles['Normal']))
@@ -110,12 +118,9 @@ class CertificadoPDFService:
         story.append(Paragraph("Publicaciones Scopus", self.styles['SubTitle']))
 
         gender_section = "del" if gender == "M" else "de la"
-
-        section_title = f"Tipo y Número de publicaciones Scopus {gender_section} {full_name}"
-        
-        story.append(Paragraph(section_title, self.styles['Section']))
-
         article = "El" if gender == "M" else "La"
+
+        # Introducción Scopus
         intro_scopus = f"{article} {full_name}, es {author.get('cargo', 'Docente')} de la Escuela Politécnica Nacional y miembro del {department}."
         story.append(Paragraph(intro_scopus, self.styles['Justified']))
         story.append(Spacer(1, 10))
@@ -124,34 +129,80 @@ class CertificadoPDFService:
         story.append(Paragraph(stats_text, self.styles['Justified']))
         story.append(Spacer(1, 15))
 
+        any_top_10 = False
+        any_no_filiation = False
+
         # Lista de Publicaciones
         for i, pub in enumerate(publications, 1):
-            categorias = str(pub.get("sjr_categories", "N/A"))
-            has_q1 = "Q1" in categorias.upper()
+            categories = str(pub.get("sjr_categories", "N/A"))
+            is_top_10 = "[Categoría dentro del 10% superior" in categories
             
-            pub_str = f"{i}. ({pub.get('pub_year', '')}) \"{pub.get('pub_title', '')}\". {pub.get('source_title', '')}. "
-            if categorias != "N/A":
-                pub_str += f"<b>Indexada en Scopus - {categorias}</b>."
-            else:
-                pub_str += "<b>Indexada en Scopus</b>."
+            # Compatibilidad con las llaves enviadas (epn_affiliation o pertenece_a_institucion_en_publicacion)
+            pertenece_institucion = pub.get("epn_affiliation", pub.get("pertenece_a_institucion_en_publicacion", True))
+            is_no_filiation = not pertenece_institucion
+
+            if is_top_10:
+                any_top_10 = True
+            if is_no_filiation:
+                any_no_filiation = True
+
+            prefix = "** " if is_top_10 else ""
             
-            doi = pub.get("doi", "")
-            if doi and doi != "N/A":
-                pub_str += f" DOI: {doi}"
+            # Manejo de compatibilidad de llaves para año y título
+            pub_year = pub.get('pub_year') or pub.get('año', '')
+            pub_title = pub.get('pub_title') or pub.get('titulo', '')
+            source_title = pub.get('source_title') or pub.get('revista', '')
             
-            # Nota de filiación si no pertenece a la institución
-            if not pub.get("epn_affiliation", True):
+            pub_str = f"{prefix}{i}. ({pub_year}) \"{pub_title}\". {source_title}. "
+            
+            # Formato de indexación y Q1 (negritas)
+            index_text = f"<b>Indexada en Scopus - {categories}</b>." if categories != "N/A" else "<b>Indexada en Scopus</b>."
+            pub_str += index_text
+            
+            if pub.get("doi") and pub.get("doi") != "N/A":
+                pub_str += f" DOI: {pub.get('doi')}"
+            
+            if is_no_filiation:
                 pub_str += " <u>(Sin Filiación)</u>"
             
-            # Si tiene Q1, aplicar negritas a todo el párrafo
-            if has_q1:
+            # Aplicar negrita total si es Q1
+            if "Q1" in categories.upper():
                 pub_str = f"<b>{pub_str}</b>"
 
             story.append(Paragraph(pub_str, self.styles['Publication']))
         
+        # --- LEYENDAS CONDICIONALES ---
+        story.append(Spacer(1, 10))
+        if any_top_10:
+            story.append(Paragraph("** Publicación dentro del 10% superior en al menos una categoría de Scimago SJR.", self.styles['Justified']))
+        if any_no_filiation:
+            story.append(Paragraph("Sin Filiación: Publicación sin filiación de la Escuela Politécnica Nacional.", self.styles['Justified']))
+        
+        # --- GRÁFICA DE TENDENCIA ---
         story.append(Spacer(1, 15))
+        story.append(Paragraph(f"Adicionalmente, en la Figura 1 se muestra la tendencia por año de las publicaciones en Scopus {gender_section} {full_name}.", self.styles['Justified']))
+        story.append(Spacer(1, 10))
+        
+        grafica_buffer = self._draw_chart(publications)
+        img = RLImage(grafica_buffer, width=15*cm, height=7.5*cm)
+        story.append(img)
+        story.append(Spacer(1, 10))
+        story.append(Paragraph("<b>Figura 1.</b> Publicaciones Scopus por Año - Fuente web de Scopus.", self.styles['CaptionCenter']))
 
+        # --- ÁREAS TEMÁTICAS ---
+        story.append(Spacer(1, 20))
+        story.append(Paragraph(f"Áreas Temáticas de publicaciones Scopus {gender_section} {full_name}", self.styles['Section']))
+        
+        num_areas = len(subject_areas)
+        story.append(Paragraph(f"{article} {full_name}, ha publicado en {num_areas} áreas temáticas, las cuales se detallan a continuación:", self.styles['Justified']))
+        story.append(Spacer(1, 10))
+        
+        for idx, area in enumerate(subject_areas, 1):
+            area_text = f"{idx}. {area.get('subject_area')}"
+            story.append(Paragraph(area_text, self.styles['Publication']))
+        
         # --- 4. CONCLUSIÓN ---
+        story.append(Spacer(1, 10))
         story.append(Paragraph("Conclusión", self.styles['SubTitle']))
         articulo_min = "el" if gender == "M" else "la"
         texto_conclusion = f"Por los antecedentes expuestos, la autoridad competente certifica que {articulo_min} {full_name}, cuenta con un total de {len(publications)} publicaciones. {articulo_min.capitalize()} {full_name} puede hacer uso del presente certificado para lo que considere necesario."
@@ -175,42 +226,108 @@ class CertificadoPDFService:
         ]))
         story.append(author_table)
 
-        # --- CALLBACK DE MARCA DE AGUA ---
-        def draw_watermark(canvas, doc):
-            """Dibuja la marca de agua 'BORRADOR NO VÁLIDO' en el centro de cada página."""
-            canvas.saveState()
-            canvas.setFont("Helvetica-Bold", 60)
-            canvas.setFillColorRGB(0.85, 0.85, 0.85) # Gris claro
-            canvas.translate(A4[0]/2, A4[1]/2)
-            canvas.rotate(45)
-            canvas.drawCentredString(0, 0, "BORRADOR NO VÁLIDO")
-            canvas.restoreState()
-
         # Construcción del PDF
-        if is_draft:
-            doc.build(story, onFirstPage=draw_watermark, onLaterPages=draw_watermark)
-        else:
-            doc.build(story)
-
+        doc.build(story)
         pdf_bytes = buffer.getvalue()
         buffer.close()
 
-        # Si es final, superponer sobre la plantilla
+        # Añadir la plantilla solo si es un documento final (no es borrador)
         if not is_draft:
             pdf_bytes = self._add_template(pdf_bytes)
 
         return pdf_bytes
 
+    def _draw_chart(self, publications: list) -> io.BytesIO:
+        """Genera un gráfico de tendencias por año con estilos personalizados."""
+        # Preparar datos a partir de la lista de publicaciones
+        years = []
+        for p in publications:
+            year_str = str(p.get("pub_year") or p.get("año", ""))
+            if year_str.isdigit():
+                years.append(int(year_str))
+                
+        pub_count = Counter(years)
+        if not pub_count:
+            # Fallback en caso de que no haya publicaciones válidas
+            pub_count = {2024: 0}
+            
+        years = sorted(pub_count.keys())
+        counts = [pub_count[y] for y in years]
+
+        # Crear figura
+        plt.figure(figsize=(8, 4))
+        
+        # Crear gráfico de línea con colores personalizados
+        plt.plot(years, counts, marker='o', linewidth=2, markersize=6, color='#009ece')
+        
+        # Configurar etiquetas y título
+        plt.xlabel('Year', fontsize=10, ha='center', color='#2e2e2e')
+        plt.ylabel('Documents', fontsize=10, ha='center', color='#2e2e2e')
+        plt.title('Documents by year', fontsize=13, pad=15, color='#2e2e2e', loc='left')
+        
+        # Configurar grid - solo líneas horizontales
+        plt.grid(axis='y', alpha=0.3, color='#cccccc')
+        
+        # Hacer transparentes los bordes de la gráfica
+        for spine in plt.gca().spines.values():
+            spine.set_visible(False)
+        
+        # Eliminar márgenes
+        plt.margins(0)
+        plt.tight_layout(pad=0)
+        
+        # Configurar límites de ejes
+        plt.xlim(min(years) - 0.5, max(years) + 0.5)
+        plt.ylim(0, max(counts) + 1)
+        
+        # Configurar ticks dinámicamente según la cantidad de datos
+        # X-axis (años): determinar el paso según el rango de años
+        year_range = max(years) - min(years) + 1
+        if year_range <= 15:
+            x_step = 1
+        elif year_range <= 30:
+            x_step = 2
+        elif year_range <= 45:
+            x_step = 3
+        else:
+            x_step = 5
+        
+        x_ticks = list(range(min(years), max(years) + 1, x_step))
+        plt.xticks(x_ticks, color='#2e2e2e')
+        
+        # Y-axis (número de publicaciones): determinar el paso según el máximo
+        max_count = max(counts) if counts else 1
+        if max_count <= 5:
+            y_step = 1
+        elif max_count <= 10:
+            y_step = 2
+        elif max_count <= 20:
+            y_step = 3
+        else:
+            y_step = 5
+        
+        y_ticks = list(range(0, max_count + y_step + 1, y_step))
+        plt.yticks(y_ticks, color='#2e2e2e')
+        
+        # Guardar como imagen en memoria
+        img_buffer = io.BytesIO()
+        plt.savefig(img_buffer, format='png', dpi=150, bbox_inches='tight', transparent=True)
+        plt.close()
+        img_buffer.seek(0)
+        
+        return img_buffer
+    
     def _add_template(self, content_bytes: bytes) -> bytes:
+        """Aplica el template para generar el certificado final."""
         if not os.path.exists(self.template_path):
-            logging.warning("No se encontró form.pdf en el servidor. Retornando PDF sin plantilla.")
+            logging.warning("No se encontró la template. Retornando borrador.")
             return content_bytes
 
         try:
             content_reader = PdfReader(io.BytesIO(content_bytes))
             writer = PdfWriter()
 
-            # Agregar plantilla a cada página del borrador para generar el certificado final
+            # Agregar template para generar el certificado final
             for page in content_reader.pages:
                 template_reader = PdfReader(self.template_path)
                 page_merge = template_reader.pages[0]
@@ -220,8 +337,7 @@ class CertificadoPDFService:
             output_buffer = io.BytesIO()
             writer.write(output_buffer)
             return output_buffer.getvalue()
-            
+
         except Exception as e:
-            logging.error(f"Error al agregar template: {e}")
+            logging.error("Error al agregar template: %s", str(e))
             return content_bytes
-        
