@@ -32,9 +32,9 @@ async def GenerarCertificado(req: func.HttpRequest) -> func.HttpResponse:
         # 1. RECIBIR Y VALIDAR DATOS DEL FRONTEND
         req_body = req.get_json()
         scopus_ids = req_body.get('scopus_ids', [])
-        autor_data = req_body.get('autor', {})
-        metadatos = req_body.get('metadatos', {})
-        es_borrador = req_body.get('es_borrador', True)
+        author_data = req_body.get('author', {})
+        metadata = req_body.get('metadata', {})
+        is_draft = req_body.get('is_draft', True)
 
         if not scopus_ids or not isinstance(scopus_ids, list):
             return func.HttpResponse(json.dumps({"error": "Se requiere una lista válida de 'scopus_ids'."}), status_code=400)
@@ -42,7 +42,7 @@ async def GenerarCertificado(req: func.HttpRequest) -> func.HttpResponse:
         # 2. VALIDACIÓN DE REGLAS DE NEGOCIO (Roles)
         pdf_service = CertificadoPDFService()
         try:
-            pdf_service.validar_roles(autor_data, metadatos)
+            pdf_service.check_roles(author_data, metadata)
         except ValueError as ve:
             return func.HttpResponse(json.dumps({"error": str(ve)}), status_code=400, mimetype="application/json")
 
@@ -75,23 +75,23 @@ async def GenerarCertificado(req: func.HttpRequest) -> func.HttpResponse:
             logging.warning("SJR Mapper falló. Se generará sin datos SJR.")
 
         # 5. GENERACIÓN DE PDF (Paso 3)
-        pdf_bytes = pdf_service.generar_documento(
-            autor=autor_data,
-            metadatos=metadatos,
-            publicaciones=todas_publicaciones,
-            es_borrador=es_borrador
+        pdf_bytes = pdf_service.generate_pdf(
+            author=author_data,
+            metadata=metadata,
+            publications=todas_publicaciones,
+            is_draft=is_draft
         )
 
         # 6. RESPUESTA AL FRONTEND
         pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
-        tipo_doc = "Borrador" if es_borrador else "Certificado Final"
+        tipo_doc = "Borrador" if is_draft else "Certificado Final"
 
         return func.HttpResponse(
             json.dumps({
                 "mensaje": f"{tipo_doc} generado exitosamente",
                 "total_publicaciones": len(todas_publicaciones),
                 "pdf_base64": pdf_base64,
-                "nombre_sugerido": f"Certificado_{autor_data.get('apellidos', 'Autor')}.pdf"
+                "nombre_sugerido": f"Certificado_{author_data.get('apellidos', 'Autor')}.pdf"
             }),
             mimetype="application/json",
             status_code=200

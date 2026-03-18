@@ -1,9 +1,14 @@
+"""
+Módulo encargado de interactuar con la API de Scopus para extraer las publicaciones y
+áreas de conocimiento de un autor dado los IDs de Scopus asociados a él.
+"""
+
 import os
 import logging
 from httpx import AsyncClient, Timeout
 
-# Áreas de Conocimiento obtenidas desde Scopus
-SUBJECT_AREA_MAP = {
+# Diccionario de Áreas de Conocimiento de Scopus
+SUBJECT_AREAS = {
     "AGRI": "Agricultural and Biological Sciences",
     "ARTS": "Arts and Humanities",
     "BIOC": "Biochemistry, Genetics and Molecular Biology",
@@ -34,26 +39,28 @@ SUBJECT_AREA_MAP = {
 }
 
 class ScopusExtractor:
+    """ Clase encargada de interactuar con la API de Scopus para extraer información relevante. """
     def __init__(self):
         self.api_key = os.environ.get("SCOPUS_API_KEY")
         self.inst_token = os.environ.get("SCOPUS_INST_TOKEN")
-        self.target_afid = os.environ.get("TARGET_AFFILIATION_ID")
+        self.target_afid = os.environ.get("EPN_AFFILIATION_ID")
         self.base_url = "https://api.elsevier.com"
-        
+
         self.headers = {
             "Accept": "application/json",
             "X-ELS-APIKey": self.api_key
         }
         if self.inst_token:
             self.headers["X-ELS-Insttoken"] = self.inst_token
-            
+
         self.timeout = Timeout(120.0, connect=10.0)
 
     async def get_publications(self, scopus_id: str, async_client: AsyncClient) -> list:
-        publicaciones = []
+        """ Obtiene las publicaciones asociadas a un autor dado su Scopus ID. """
+        publication_list = []
         start = 0
         count = 25
-        
+
         while True:
             url = f"{self.base_url}/content/search/scopus"
             params = {
@@ -62,55 +69,60 @@ class ScopusExtractor:
                 "count": count,
                 "view": "COMPLETE"
             }
-            
+
             response = await async_client.get(url, headers=self.headers, params=params)
             if response.status_code != 200:
-                logging.error(f"Scopus Error {response.status_code}: {response.text}")
+                logging.error("Scopus Error %s: %s", response.status_code, response.text)
                 break
-                
+
             data = response.json()
             search_results = data.get("search-results", {})
             entries = search_results.get("entry", [])
-            
+
             if not entries or (len(entries) == 1 and entries[0].get("error")):
                 break
-                
+
             for entry in entries:
                 # Verificar si está afiliado a la EPN
-                pertenece_inst = False
+                is_epn_affiliated = False
                 authors = entry.get("author", [])
-                if isinstance(authors, dict): authors = [authors]
-                    
+                if isinstance(authors, dict):
+                    authors = [authors]
+
                 for author in authors:
                     if str(author.get("authid", "")) == str(scopus_id):
                         afids = author.get("afid", [])
-                        if isinstance(afids, dict): afids = [afids]
+                        if isinstance(afids, dict):
+                            afids = [afids]
+
                         for afid_obj in afids:
                             if str(afid_obj.get("$", "")) == str(self.target_afid):
-                                pertenece_inst = True
+                                is_epn_affiliated = True
                                 break
-                
-                # Armar objeto de publicación
+
+                # Se obtienen los datos de cada publicación y se agrega a la lista de publicaciones
                 pub_data = {
-                    "scopus_id_asociado": scopus_id,
-                    "titulo": entry.get("dc:title", "N/A"),
-                    "año": entry.get("prism:coverDate", "N/A").split("-")[0],
+                    "scopus_id": scopus_id,
+                    "pub_title": entry.get("dc:title", "N/A"),
+                    "pub_year": entry.get("prism:coverDate", "N/A").split("-")[0],
                     "doi": entry.get("prism:doi", "N/A"),
-                    "tipo": entry.get("subtypeDescription", "N/A"),
-                    "id_revista": entry.get("source-id", "N/A"),
-                    "revista": entry.get("prism:publicationName", "N/A"),
-                    "pertenece_a_institucion_en_publicacion": pertenece_inst
+                    "doc_type": entry.get("subtypeDescription", "N/A"),
+                    "source_id": entry.get("source-id", "N/A"),
+                    "source_title": entry.get("prism:publicationName", "N/A"),
+                    "epn_affiliation": is_epn_affiliated
                 }
-                publicaciones.append(pub_data)
-                
+                publication_list.append(pub_data)
+
             total_results = int(search_results.get("opensearch:totalResults", 0))
             if start + count >= total_results:
                 break
             start += count
-            
-        return publicaciones
+
+        return publication_list
 
     async def get_subject_areas(self, scopus_ids: list, async_client: AsyncClient) -> list:
+        """ Obtiene las áreas de conocimiento correspondientes a un autor. """
+
         au_queries = [f"AU-ID({sid})" for sid in scopus_ids]
         query = " OR ".join(au_queries)
 
@@ -123,12 +135,14 @@ class ScopusExtractor:
 
         response = await async_client.get(url, headers=self.headers, params=params)
         if response.status_code != 200:
+            logging.error("Scopus Error %s: %s", response.status_code, response.text)
             return []
 
         data = response.json()
         search_results = data.get("search-results", {})
         facet_data = search_results.get("facet", [])
-        if isinstance(facet_data, dict): facet_data = [facet_data]
+        if isinstance(facet_data, dict):
+            facet_data = [facet_data]
 
         categories = []
         for facet in facet_data:
@@ -140,7 +154,7 @@ class ScopusExtractor:
         for cat in categories:
             abbrev = cat.get("value", cat.get("name", ""))
             hit_count = int(cat.get("hitCount", 0))
-            subject_area = SUBJECT_AREA_MAP.get(abbrev.upper(), cat.get("label", abbrev))
+            subject_area = SUBJECT_AREAS.get(abbrev.upper(), cat.get("label", abbrev))
             areas.append({
                 "abbrev": abbrev,
                 "subject_area": subject_area,

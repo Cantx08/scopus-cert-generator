@@ -1,39 +1,50 @@
+"""
+Servicio para generar certificados en formato PDF.
+"""
+
 import io
 import os
 import logging
 from reportlab.lib.pagesizes import A4
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_JUSTIFY
+from reportlab.lib.enums import TA_LEFT, TA_JUSTIFY
 from reportlab.lib import colors
 from reportlab.lib.units import cm
 from pypdf import PdfReader, PdfWriter
 
 class CertificadoPDFService:
+    """
+    Servicio para generar certificados y borradores en formato PDF.
+    """
     def __init__(self, template_name="form.pdf"):
         self.template_path = os.path.join(os.path.dirname(__file__), "..", template_name)
-        self.styles = self._configurar_estilos()
+        self.styles = self._configure_styles()
 
-    def validar_roles(self, autor: dict, metadatos: dict):
-        """Valida que los roles no se crucen según reglas de negocio."""
-        nombre_autor = f"{autor.get('nombres', '')} {autor.get('apellidos', '')}".strip().lower()
-        nombre_elaborador = metadatos.get('elaborador', '').strip().lower()
-        nombre_firmante = metadatos.get('firmante_nombre', '').strip().lower()
+    def check_roles(self, author: dict, metadata: dict):
+        """
+        Verifica que tanto el docente, como el elaborador y la autoridad firmante sean diferentes.
+        """
+        author_name = f"{author.get('nombres', '')} {author.get('apellidos', '')}".strip().lower()
+        report_creator_name = metadata.get('elaborador', '').strip().lower()
+        authority_name = metadata.get('firmante_nombre', '').strip().lower()
 
-        if nombre_elaborador == nombre_firmante:
+        if report_creator_name == authority_name:
             raise ValueError("El elaborador del informe y el firmante no pueden ser la misma persona.")
-        if nombre_autor == nombre_elaborador:
+        if author_name == report_creator_name:
             raise ValueError("El autor de las publicaciones no puede ser el elaborador del certificado.")
-        if nombre_autor == nombre_firmante:
+        if author_name == authority_name:
             raise ValueError("El autor de las publicaciones no puede ser el firmante del certificado.")
 
-    def _configurar_estilos(self):
+    def _configure_styles(self):
         """Configura los estilos basándose en style_manager.py"""
         styles = getSampleStyleSheet()
         
         styles.add(ParagraphStyle(name='MainTitle', parent=styles['Title'], fontSize=20, spaceAfter=30,
                                   alignment=TA_LEFT, textColor=colors.black, fontName='Helvetica-Bold'))
-        styles.add(ParagraphStyle(name='SubTitle', parent=styles['Heading2'], fontSize=12,
+        styles.add(ParagraphStyle(name='SubTitle', parent=styles['Heading2'], fontSize=14,
+                                  spaceAfter=10, spaceBefore=10, fontName='Helvetica-Bold'))
+        styles.add(ParagraphStyle(name='Section', parent=styles['Heading3'], fontSize=12,
                                   spaceAfter=10, spaceBefore=10, fontName='Helvetica-Bold'))
         styles.add(ParagraphStyle(name='Justified', parent=styles['Normal'], fontSize=11,
                                   alignment=TA_JUSTIFY, spaceAfter=6, fontName='Times-Roman'))
@@ -45,18 +56,20 @@ class CertificadoPDFService:
                                   alignment=TA_LEFT, fontName='Times-Roman', textColor=colors.black))
         return styles
 
-    def generar_documento(self, autor: dict, metadatos: dict, publicaciones: list, es_borrador: bool) -> bytes:
-        self.validar_roles(autor, metadatos)
+    def generate_pdf(self, author: dict, metadata: dict, publications: list, is_draft: bool) -> bytes:
+        """Genera el PDF del certificado o borrador."""
+        self.check_roles(author, metadata)
 
         buffer = io.BytesIO()
-        # Usamos SimpleDocTemplate con márgenes ajustados para dar espacio al membrete
+        
+        # Configuración de formato y márgenes del documento
         doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=2*cm, leftMargin=2*cm, topMargin=3*cm, bottomMargin=2.5*cm)
         story = []
 
         # --- 1. ENCABEZADO ---
-        fecha = metadatos.get("fecha_generacion", "")
+        certificate_date = metadata.get("fecha_generacion", "")
         left_title = Paragraph("Certificación de Publicaciones", self.styles['MainTitle'])
-        right_date = Paragraph(f"<font size=10>{fecha}</font>", self.styles['MainTitle'])
+        right_date = Paragraph(f"<font size=10>{certificate_date}</font>", self.styles['MainTitle'])
         
         # Tabla para alinear título y fecha en la misma línea
         title_table = Table([[left_title, right_date]], colWidths=[11*cm, 6*cm], hAlign='LEFT')
@@ -72,44 +85,51 @@ class CertificadoPDFService:
         story.append(Spacer(1, 20))
 
         # Información del docente
-        nombre_completo = f"{autor.get('nombres', '')} {autor.get('apellidos', '')}"
-        depto = autor.get('departamento', 'Departamento no especificado')
-        author_info = f"<b>{nombre_completo}</b><br/><br/>{depto}<br/><br/>Escuela Politécnica Nacional"
+        full_name = f"{author.get('nombres', '')} {author.get('apellidos', '')}"
+        department = author.get('departamento', 'Departamento no especificado')
+        author_info = f"<b>{full_name}</b><br/><br/>{department}<br/><br/>Escuela Politécnica Nacional"
         story.append(Paragraph(f"<font size=12>{author_info}</font>", self.styles['Normal']))
         story.append(Spacer(1, 20))
 
         # --- 2. RESUMEN ---
         story.append(Paragraph("<b>RESUMEN</b>", self.styles['SubTitle']))
-        genero = autor.get("genero", "M").upper()
-        genero_text = "del profesor" if genero == "M" else "de la profesora"
-        pub_text = "las publicaciones" if len(publicaciones) > 1 else "la publicación"
-        memo = metadatos.get("memorando", "")
-        
+        gender = author.get("genero", "M").upper()
+        gender_text = "del profesor" if gender == "M" else "de la profesora"
+        pub_text = "las publicaciones" if len(publications) > 1 else "la publicación"
+        memo = metadata.get("memorando", "")
+
         if memo:
-            resumen = f"El presente informe se realiza en base a la solicitud del memorando {memo}, con la finalidad de certificar {pub_text} {genero_text} {nombre_completo}."
+            summary_text = f"El presente informe se realiza en base a la solicitud del memorando {memo}, con la finalidad de certificar {pub_text} {gender_text} {full_name}."
         else:
-            resumen = f"El presente informe se realiza con la finalidad de certificar {pub_text} {genero_text} {nombre_completo}."
+            summary_text = f"El presente informe se realiza con la finalidad de certificar {pub_text} {gender_text} {full_name}."
         
-        story.append(Paragraph(resumen, self.styles['Justified']))
+        story.append(Paragraph(summary_text, self.styles['Justified']))
         story.append(Spacer(1, 15))
 
         # --- 3. INFORME TÉCNICO (SCOPUS) ---
         story.append(Paragraph("Publicaciones Scopus", self.styles['SubTitle']))
-        articulo = "El" if genero == "M" else "La"
-        intro_scopus = f"{articulo} {nombre_completo}, es {autor.get('cargo', 'Docente')} de la Escuela Politécnica Nacional y miembro del {depto}."
+
+        gender_section = "del" if gender == "M" else "de la"
+
+        section_title = f"Tipo y Número de publicaciones Scopus {gender_section} {full_name}"
+        
+        story.append(Paragraph(section_title, self.styles['Section']))
+
+        article = "El" if gender == "M" else "La"
+        intro_scopus = f"{article} {full_name}, es {author.get('cargo', 'Docente')} de la Escuela Politécnica Nacional y miembro del {department}."
         story.append(Paragraph(intro_scopus, self.styles['Justified']))
         story.append(Spacer(1, 10))
         
-        stats_text = f"Ha participado en un total de {len(publicaciones)} publicaciones Scopus. Tal como se detalla a continuación:"
+        stats_text = f"Ha participado en un total de {len(publications)} publicaciones Scopus. Tal como se detalla a continuación:"
         story.append(Paragraph(stats_text, self.styles['Justified']))
         story.append(Spacer(1, 15))
 
         # Lista de Publicaciones
-        for i, pub in enumerate(publicaciones, 1):
-            categorias = str(pub.get("sjr_categorias", "N/A"))
+        for i, pub in enumerate(publications, 1):
+            categorias = str(pub.get("sjr_categories", "N/A"))
             has_q1 = "Q1" in categorias.upper()
             
-            pub_str = f"{i}. ({pub.get('año', '')}) \"{pub.get('titulo', '')}\". {pub.get('revista', '')}. "
+            pub_str = f"{i}. ({pub.get('pub_year', '')}) \"{pub.get('pub_title', '')}\". {pub.get('source_title', '')}. "
             if categorias != "N/A":
                 pub_str += f"<b>Indexada en Scopus - {categorias}</b>."
             else:
@@ -120,7 +140,7 @@ class CertificadoPDFService:
                 pub_str += f" DOI: {doi}"
             
             # Nota de filiación si no pertenece a la institución
-            if not pub.get("pertenece_a_institucion_en_publicacion", True):
+            if not pub.get("epn_affiliation", True):
                 pub_str += " <u>(Sin Filiación)</u>"
             
             # Si tiene Q1, aplicar negritas a todo el párrafo
@@ -133,18 +153,18 @@ class CertificadoPDFService:
 
         # --- 4. CONCLUSIÓN ---
         story.append(Paragraph("Conclusión", self.styles['SubTitle']))
-        articulo_min = "el" if genero == "M" else "la"
-        texto_conclusion = f"Por los antecedentes expuestos, la autoridad competente certifica que {articulo_min} {nombre_completo}, cuenta con un total de {len(publicaciones)} publicaciones. {articulo_min.capitalize()} {nombre_completo} puede hacer uso del presente certificado para lo que considere necesario."
+        articulo_min = "el" if gender == "M" else "la"
+        texto_conclusion = f"Por los antecedentes expuestos, la autoridad competente certifica que {articulo_min} {full_name}, cuenta con un total de {len(publications)} publicaciones. {articulo_min.capitalize()} {full_name} puede hacer uso del presente certificado para lo que considere necesario."
         story.append(Paragraph(texto_conclusion, self.styles['Justified']))
         
         # --- 5. FIRMAS (Empujadas al final) ---
         story.append(Spacer(1, 60))
-        story.append(Paragraph(f"<b>{metadatos.get('firmante_nombre', '').upper()}</b>", self.styles['Signature']))
-        story.append(Paragraph(f"<b>{metadatos.get('firmante_cargo', '').upper()} DE LA ESCUELA POLITÉCNICA NACIONAL</b>", self.styles['Signature']))
+        story.append(Paragraph(f"<b>{metadata.get('firmante_nombre', '').upper()}</b>", self.styles['Signature']))
+        story.append(Paragraph(f"<b>{metadata.get('firmante_cargo', '').upper()} DE LA ESCUELA POLITÉCNICA NACIONAL</b>", self.styles['Signature']))
         story.append(Spacer(1, 15))
 
         # Tabla del elaborador con bordes
-        table_details = [[Paragraph("Elaborado por:", self.styles['AuthorTable']), Paragraph(metadatos.get('elaborador', ''), self.styles['AuthorTable'])]]
+        table_details = [[Paragraph("Elaborado por:", self.styles['AuthorTable']), Paragraph(metadata.get('elaborador', ''), self.styles['AuthorTable'])]]
         author_table = Table(table_details, colWidths=[2.5*cm, 4*cm], hAlign='LEFT')
         author_table.setStyle(TableStyle([
             ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
@@ -167,7 +187,7 @@ class CertificadoPDFService:
             canvas.restoreState()
 
         # Construcción del PDF
-        if es_borrador:
+        if is_draft:
             doc.build(story, onFirstPage=draw_watermark, onLaterPages=draw_watermark)
         else:
             doc.build(story)
@@ -176,12 +196,12 @@ class CertificadoPDFService:
         buffer.close()
 
         # Si es final, superponer sobre la plantilla
-        if not es_borrador:
-            pdf_bytes = self._aplicar_plantilla(pdf_bytes)
+        if not is_draft:
+            pdf_bytes = self._add_template(pdf_bytes)
 
         return pdf_bytes
 
-    def _aplicar_plantilla(self, content_bytes: bytes) -> bytes:
+    def _add_template(self, content_bytes: bytes) -> bytes:
         if not os.path.exists(self.template_path):
             logging.warning("No se encontró form.pdf en el servidor. Retornando PDF sin plantilla.")
             return content_bytes
@@ -190,8 +210,8 @@ class CertificadoPDFService:
             content_reader = PdfReader(io.BytesIO(content_bytes))
             writer = PdfWriter()
 
+            # Agregar plantilla a cada página del borrador para generar el certificado final
             for page in content_reader.pages:
-                # Copia fresca del fondo institucional por cada página generada
                 template_reader = PdfReader(self.template_path)
                 page_merge = template_reader.pages[0]
                 page_merge.merge_page(page)
@@ -202,6 +222,6 @@ class CertificadoPDFService:
             return output_buffer.getvalue()
             
         except Exception as e:
-            logging.error(f"Error al aplicar plantilla: {e}")
+            logging.error(f"Error al agregar template: {e}")
             return content_bytes
         
