@@ -57,7 +57,7 @@ async def GenerateCertificate(req: func.HttpRequest) -> func.HttpResponse:
         if not author_data or not metadata:
             return func.HttpResponse(json.dumps({"error": "Faltan datos en el objeto 'author' o 'metadata'."}), status_code=400, mimetype="application/json")
 
-        # 2. VALIDACIÓN DE ROLES (Reglas de negocio)
+        # 2. VALIDACIÓN DE ROLES
         pdf_service = CertificadoPDFService()
         try:
             pdf_service.check_roles(author_data, metadata)
@@ -93,7 +93,7 @@ async def GenerateCertificate(req: func.HttpRequest) -> func.HttpResponse:
         else:
             logging.warning("SJR Mapper falló o no está inicializado. Se generará sin datos SJR.")
 
-        # 5. GENERACIÓN DE PDF (Paso 3)
+        # 5. GENERACIÓN DE PDF
         pdf_bytes = pdf_service.generate_pdf(
             author=author_data,
             metadata=metadata,
@@ -111,13 +111,12 @@ async def GenerateCertificate(req: func.HttpRequest) -> func.HttpResponse:
                 "mensaje": f"{tipo_doc} generado exitosamente",
                 "total_publicaciones": len(all_publications),
                 "pdf_base64": pdf_base64,
-                "nombre_sugerido": f"Certificado_{author_data.get('apellidos', 'Autor')}.pdf"
+                "nombre_archivo": f"Certificado Publicaciones - {author_data.get('nombres', 'Nombre')} {author_data.get('apellidos', 'Apellido')}.pdf"
             }),
             mimetype="application/json",
             status_code=200
         )
 
     except Exception as e:
-        # exc_info=True adjunta la traza del error (Stack Trace) a los logs de Azure
         logging.error("Error en el pipeline principal: %s", str(e), exc_info=True)
         return func.HttpResponse(json.dumps({"error": f"Error interno del servidor: {str(e)}"}), status_code=500, mimetype="application/json")
