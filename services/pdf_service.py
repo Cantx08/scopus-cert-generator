@@ -75,7 +75,7 @@ class CertificadoPDFService:
         story = []
 
         # --- 1. ENCABEZADO ---
-        certificate_date = metadata.get("fecha_generacion", "")
+        certificate_date = metadata.get("fecha", "")
         left_title = Paragraph("Certificación de Publicaciones", self.styles['MainTitle'])
         right_date = Paragraph(f"<font size=10>{certificate_date}</font>", self.styles['MainTitle'])
         
