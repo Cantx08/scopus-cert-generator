@@ -5,6 +5,7 @@ Servicio para generar certificados en formato PDF.
 import io
 import os
 import logging
+from datetime import datetime
 from collections import Counter
 import matplotlib
 # Usar el backend 'Agg' es crucial en Azure Functions para evitar errores de hilos GUI
@@ -64,6 +65,32 @@ class CertificadoPDFService:
                                   alignment=TA_LEFT, fontName='Times-Roman', textColor=colors.black))
         return styles
 
+    def _format_certificate_date(self, raw_date: str) -> str:
+        """Formatea fechas ISO a texto en español: 2026-03-23 -> 23 de marzo de 2026."""
+        if not raw_date:
+            return ""
+
+        raw_date = str(raw_date).strip()
+        month_names = {
+            1: "enero", 2: "febrero", 3: "marzo", 4: "abril",
+            5: "mayo", 6: "junio", 7: "julio", 8: "agosto",
+            9: "septiembre", 10: "octubre", 11: "noviembre", 12: "diciembre"
+        }
+
+        parsed_date = None
+        for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"):
+            try:
+                parsed_date = datetime.strptime(raw_date, fmt)
+                break
+            except ValueError:
+                continue
+
+        if not parsed_date:
+            return raw_date
+
+        month = month_names.get(parsed_date.month)
+        return f"{parsed_date.day} de {month} de {parsed_date.year}"
+
     def generate_pdf(self, author: dict, metadata: dict, publications: list, subject_areas: list, is_draft: bool) -> bytes:
         """Genera el PDF del certificado o borrador."""
         self.check_roles(author, metadata)
@@ -75,12 +102,12 @@ class CertificadoPDFService:
         story = []
 
         # --- 1. ENCABEZADO ---
-        certificate_date = metadata.get("fecha", "")
+        certificate_date = self._format_certificate_date(metadata.get("fecha", ""))
         left_title = Paragraph("Certificación de Publicaciones", self.styles['MainTitle'])
         right_date = Paragraph(f"<font size=10>{certificate_date}</font>", self.styles['MainTitle'])
         
         # Tabla para alinear título y fecha en la misma línea
-        title_table = Table([[left_title, right_date]], colWidths=[11*cm, 6*cm], hAlign='LEFT')
+        title_table = Table([[left_title, right_date]], colWidths=[13*cm, 6*cm], hAlign='LEFT')
         title_table.setStyle(TableStyle([
             ('VALIGN', (0, 0), (-1, -1), 'BOTTOM'),
             ('ALIGN', (0, 0), (0, 0), 'LEFT'),

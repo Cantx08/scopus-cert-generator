@@ -105,13 +105,14 @@ async def GenerateCertificate(req: func.HttpRequest) -> func.HttpResponse:
         # 6. RESPUESTA PDF AL FRONTEND
         pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
         tipo_doc = "Borrador" if is_draft else "Certificado Final"
+        title_aux = author_data.get('titulo', '').replace('.', '').strip()
 
         return func.HttpResponse(
             json.dumps({
                 "mensaje": f"{tipo_doc} generado exitosamente",
                 "total_publicaciones": len(all_publications),
                 "pdf_base64": pdf_base64,
-                "nombre_archivo": f"Certificado Publicaciones - {author_data.get('nombres', 'Nombre')} {author_data.get('apellidos', 'Apellido')}.pdf"
+                "nombre_archivo": f"Certificado Publicaciones - {title_aux} {author_data.get('nombres', 'Nombre')} {author_data.get('apellidos', 'Apellido')}.pdf"
             }),
             mimetype="application/json",
             status_code=200
