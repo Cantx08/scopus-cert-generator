@@ -121,7 +121,7 @@ class CertificadoPDFService:
 
         # Información del docente
         full_name = f"{author.get('titulo', '')} {author.get('nombres', '')} {author.get('apellidos', '')}"
-        department = author.get('departamento', 'Departamento no especificado')
+        department = author.get('departamento', '')
         author_info = f"<b>{full_name}</b><br/><br/>{department}<br/><br/>Escuela Politécnica Nacional"
         story.append(Paragraph(f"<font size=12>{author_info}</font>", self.styles['Normal']))
         story.append(Spacer(1, 20))
@@ -144,6 +144,7 @@ class CertificadoPDFService:
         # --- 3. INFORME TÉCNICO (SCOPUS) ---
         story.append(Paragraph("Publicaciones Scopus", self.styles['SubTitle']))
 
+
         gender_section = "del" if gender == "M" else "de la"
         article = "El" if gender == "M" else "La"
 
@@ -152,7 +153,42 @@ class CertificadoPDFService:
         story.append(Paragraph(intro_scopus, self.styles['Justified']))
         story.append(Spacer(1, 10))
         
-        stats_text = f"Ha participado en un total de {len(publications)} publicaciones Scopus. Tal como se detalla a continuación:"
+        doc_types_counts = Counter()
+        for pub in publications:
+            # Obtenemos el tipo de documento en minúsculas para compararlo de forma segura
+            raw_type = pub.get("doc_type", "N/A").lower()
+            doc_types_counts[raw_type] += 1
+            
+        distribution_parts = []
+        for doc_type, count in doc_types_counts.most_common():
+            if doc_type == "article":
+                name = "Artículo" if count == 1 else "Artículos"
+            elif doc_type == "conference paper":
+                name = "Artículo de Conferencia" if count == 1 else "Artículos de Conferencia"
+            elif doc_type == "book chapter":
+                name = "Capítulo de Libro" if count == 1 else "Capítulos de Libros"
+            elif doc_type == "book":
+                name = "Libro" if count == 1 else "Libros"
+            elif doc_type in ["review", "data paper", "letter", "erratum", "editorial", "note", "short survey", "retracted"]:
+                # Para los que se mantienen en inglés, usamos title() para la primera letra mayúscula
+                name = doc_type.title()
+            else:
+                # Fallback por si Scopus devuelve un tipo no listado o es N/A
+                name = doc_type.title() if doc_type != "n/a" else "Desconocido"
+                
+            distribution_parts.append(f"{count} {name}")
+            
+        # Formatear la cadena uniendo con comas y el último elemento con " y "
+        if len(distribution_parts) > 1:
+            distribution_string = ", ".join(distribution_parts[:-1]) + f" y {distribution_parts[-1]}"
+        elif distribution_parts:
+            distribution_string = distribution_parts[0]
+        else:
+            distribution_string = "0 Documentos"
+
+        gender_author = "autor/co-autor" if gender == "M" else "autora/co-autora"
+
+        stats_text = f"Ha participado en un total de {len(publications)} publicaciones Scopus como {gender_author} de las mismas, distribuidas en {distribution_string}. Tal como se detalla a continuación:"
         story.append(Paragraph(stats_text, self.styles['Justified']))
         story.append(Spacer(1, 15))
 
@@ -173,17 +209,34 @@ class CertificadoPDFService:
             if is_no_filiation:
                 any_no_filiation = True
 
-            prefix = "** " if is_top_10 else ""
+            prefix = "**" if is_top_10 else ""
             
             # Manejo de compatibilidad de llaves para año y título
             pub_year = pub.get('pub_year') or pub.get('año', '')
             pub_title = pub.get('pub_title') or pub.get('titulo', '')
             source_title = pub.get('source_title') or pub.get('revista', '')
             
-            pub_str = f"{prefix}{i}. ({pub_year}) \"{pub_title}\". {source_title}. "
+            pub_str = f"{i}. {prefix}({pub_year}) \"{pub_title}\". {source_title}. "
             
+            # Determinar el texto base de indexación según el tipo de documento
+            doc_type = pub.get("doc_type", "N/A").lower()
+            if doc_type == "conference paper":
+                base_index_text = "Conferencia Indexada en Scopus"
+            elif doc_type == "book chapter":
+                base_index_text = "Cap. Libro en Scopus"
+            elif doc_type == "book":
+                base_index_text = "Libro en Scopus"
+            elif doc_type == "review":
+                base_index_text = "Review Indexado en Scopus"
+            else: # Para el resto de casos (Artículos, Data paper, Letter, etc.)
+                base_index_text = "Indexada en Scopus"
+
             # Formato de indexación y Q1 (negritas)
-            index_text = f"<b>Indexada en Scopus - {categories}</b>." if categories != "N/A" else "<b>Indexada en Scopus</b>."
+            if categories != "N/A":
+                index_text = f"<b>{base_index_text} - {categories}</b>."
+            else:
+                index_text = f"<b>{base_index_text}</b>."
+                
             pub_str += index_text
             
             if pub.get("doi") and pub.get("doi") != "N/A":
@@ -228,16 +281,23 @@ class CertificadoPDFService:
             area_text = f"{idx}. {area.get('subject_area')}"
             story.append(Paragraph(area_text, self.styles['Publication']))
         
-        # --- 4. CONCLUSIÓN ---
+        
+        # --- 4. CONCLUSIÓN ---  
         story.append(Spacer(1, 10))
         story.append(Paragraph("Conclusión", self.styles['SubTitle']))
         articulo_min = "el" if gender == "M" else "la"
-        texto_conclusion = f"Por los antecedentes expuestos, la autoridad competente certifica que {articulo_min} {full_name}, cuenta con un total de {len(publications)} publicaciones. {articulo_min.capitalize()} {full_name} puede hacer uso del presente certificado para lo que considere necesario."
+        cargo_firmante = metadata.get("firmante_cargo", "").upper()
+
+        dep_str = "el Vicerrectorado de Investigación, Innovación y Vinculación" if 'VICERRECTOR' in cargo_firmante else "la Dirección de Investigación"
+
+        pub_str = "publicaciones" if len(publications) > 1 else "publicación"
+        
+        texto_conclusion = f"Por los antecedentes expuestos, {dep_str} de la Institución, certifica que {articulo_min} {full_name}, cuenta con un total de {len(publications)} {pub_str} Scopus. {articulo_min.capitalize()} {full_name} puede hacer uso del presente certificado para lo que considere necesario."
         story.append(Paragraph(texto_conclusion, self.styles['Justified']))
         
-        # --- 5. FIRMAS (Empujadas al final) ---
+        # --- 5. FIRMAS Y ELABORADOR ---
         story.append(Spacer(1, 60))
-        story.append(Paragraph(f"<b>{metadata.get('firmante_nombre', '').upper()}</b>", self.styles['Signature']))
+        story.append(Paragraph(f"<b>{metadata.get('firmante_nombre', '')}</b>", self.styles['Signature']))
         story.append(Paragraph(f"<b>{metadata.get('firmante_cargo', '').upper()} DE LA ESCUELA POLITÉCNICA NACIONAL</b>", self.styles['Signature']))
         story.append(Spacer(1, 15))
 
