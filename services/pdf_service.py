@@ -218,7 +218,7 @@ class CertificadoPDFService:
             
             pub_str = f"{i}. {prefix}({pub_year}) \"{pub_title}\". {source_title}. "
             
-            # Determinar el texto base de indexación según el tipo de documento
+            # Indica el tipo de documento asignado a la publicación
             doc_type = pub.get("doc_type", "N/A").lower()
             if doc_type == "conference paper":
                 base_index_text = "Conferencia Indexada en Scopus"
@@ -239,19 +239,19 @@ class CertificadoPDFService:
                 
             pub_str += index_text
             
-            if pub.get("doi") and pub.get("doi") != "N/A":
-                pub_str += f" DOI: {pub.get('doi')}"
-            
-            if is_no_filiation:
-                pub_str += " <u>(Sin Filiación)</u>"
-            
             # Aplicar negrita total si es Q1
             if "Q1" in categories.upper():
                 pub_str = f"<b>{pub_str}</b>"
 
+            if pub.get("doi") and pub.get("doi") != "N/A":
+                pub_str += f' <font color="grey">DOI: {pub.get('doi')}</font>'
+
+            if is_no_filiation:
+                pub_str += " <u>(Sin Filiación)</u>"
+
             story.append(Paragraph(pub_str, self.styles['Publication']))
         
-        # --- LEYENDAS CONDICIONALES ---
+        # --- LEYENDAS ---
         story.append(Spacer(1, 10))
         if any_top_10:
             story.append(Paragraph("** Publicación dentro del 10% superior en al menos una categoría de Scimago SJR.", self.styles['Justified']))

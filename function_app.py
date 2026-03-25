@@ -26,7 +26,7 @@ RUTA_SJR = os.environ.get("SJR_CSV_PATH", "df_sjr_24_04_2025.csv")
 sjr_mapper = None 
 try:
     sjr_mapper = SJRMapper(RUTA_SJR)
-    logging.info("SJR Mapper inicializado correctamente en caché global.")
+    logging.info("SJR Mapper inicializado correctamente.")
 except Exception as e:
     logging.error("Error crítico: No se pudo cargar el archivo SJR en caché: %s", str(e))
 
@@ -39,7 +39,9 @@ async def GenerateCertificate(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('Iniciando pipeline de generación de certificado.')
 
     try:
-        # 1. RECIBIR Y VALIDAR DATOS DEL FRONTEND
+        # 1. Validación de datos que se recibe para la generación del certificado
+        # El JSON debe tener la siguiente estructura: scopus_ids, author (información del autor),
+        # metadata (información del certificado) e is_draft que indica si es borrador o certificado final.
         try:
             req_body = req.get_json()
         except ValueError:
@@ -57,7 +59,6 @@ async def GenerateCertificate(req: func.HttpRequest) -> func.HttpResponse:
         if not author_data or not metadata:
             return func.HttpResponse(json.dumps({"error": "Faltan datos en el objeto 'author' o 'metadata'."}), status_code=400, mimetype="application/json")
 
-        # 2. VALIDACIÓN DE ROLES
         pdf_service = CertificadoPDFService()
         try:
             pdf_service.check_roles(author_data, metadata)
@@ -65,13 +66,13 @@ async def GenerateCertificate(req: func.HttpRequest) -> func.HttpResponse:
             logging.warning(f"Validación de roles fallida: {ve}")
             return func.HttpResponse(json.dumps({"error": str(ve)}), status_code=400, mimetype="application/json")
 
-        # 3. EXTRACCIÓN DE SCOPUS (Paso 1)
+        # 2. Extracción de publicaciones desde Scopus
         extractor = ScopusExtractor()
         async with AsyncClient(timeout=extractor.timeout) as client:
             tasks = [extractor.get_publications(sid, client) for sid in scopus_ids]
             pubs_results = await asyncio.gather(*tasks)
             
-            # Limpieza de duplicados por DOI
+            # Obtención de publicaciones
             all_publications = []
             seen_dois = set()
             for sublist in pubs_results:
@@ -84,16 +85,16 @@ async def GenerateCertificate(req: func.HttpRequest) -> func.HttpResponse:
                     else:
                         all_publications.append(pub)
             
-            # Obtener áreas temáticas
+            # Obtención de áreas temáticas
             subject_areas = await extractor.get_subject_areas(scopus_ids, client)
 
-        # 4. MAPEO SJR (Paso 2)
+        # 3. Agregar datos de SJR a las publicaciones
         if sjr_mapper:
             all_publications = sjr_mapper.map_publications(all_publications)
         else:
-            logging.warning("SJR Mapper falló o no está inicializado. Se generará sin datos SJR.")
+            logging.warning("Ocurrió un error al inicializar el SJR Mapper. Se generará sin datos SJR.")
 
-        # 5. GENERACIÓN DE PDF
+        # 4. Generación de PDF
         pdf_bytes = pdf_service.generate_pdf(
             author=author_data,
             metadata=metadata,
@@ -102,11 +103,10 @@ async def GenerateCertificate(req: func.HttpRequest) -> func.HttpResponse:
             is_draft=is_draft
         )
 
-        # 6. RESPUESTA PDF AL FRONTEND
         pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
         tipo_doc = "Borrador" if is_draft else "Certificado Final"
         title_aux = author_data.get('titulo', '').replace('.', '').strip()
-        file_type = "Borrador Certificado" if is_draft else "Certificado Publicaciones"
+        file_type = "Borrador Publicaciones" if is_draft else "Certificado Publicaciones"
 
         return func.HttpResponse(
             json.dumps({
