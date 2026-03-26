@@ -8,7 +8,6 @@ import logging
 from datetime import datetime
 from collections import Counter
 import matplotlib
-# Usar el backend 'Agg' es crucial en Azure Functions para evitar errores de hilos GUI
 matplotlib.use('Agg') 
 import matplotlib.pyplot as plt
 
@@ -141,7 +140,7 @@ class CertificadoPDFService:
         story.append(Paragraph(summary_text, self.styles['Justified']))
         story.append(Spacer(1, 15))
 
-        # --- 3. INFORME TÉCNICO (SCOPUS) ---
+        # --- 3. LISTA DE PUBLICACIONES SCOPUS ---
         story.append(Paragraph("Publicaciones Scopus", self.styles['SubTitle']))
 
 
@@ -200,7 +199,6 @@ class CertificadoPDFService:
             categories = str(pub.get("sjr_categories", "N/A"))
             is_top_10 = "[Categoría dentro del 10% superior" in categories
             
-            # Compatibilidad con las llaves enviadas (epn_affiliation o pertenece_a_institucion_en_publicacion)
             pertenece_institucion = pub.get("epn_affiliation", pub.get("pertenece_a_institucion_en_publicacion", True))
             is_no_filiation = not pertenece_institucion
 

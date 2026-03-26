@@ -16,7 +16,7 @@ class SJRMapper:
         self.sjr_data = self._load_and_optimize_sjr(csv_path_or_url)
 
     def _load_and_optimize_sjr(self, filepath: str) -> dict:
-        logging.info("Cargando histórico SJR y calculando el Top 10% por categoría...")
+        logging.info("Cargando histórico SJR y verificar si corresponden al 10% superior...")
 
         df = pd.read_csv(
             filepath,
@@ -47,9 +47,11 @@ class SJRMapper:
                 for cat_item in cats_str.split(';'):
                     cat_item = cat_item.strip()
                     idx = cat_item.rfind(" (Q")
-                    cat_name = cat_item[:idx].strip() if idx != -1 else cat_item
 
-                    categories_by_year[source_year][cat_name].append((rank, source_id))
+                    # Solo procesar categorías que contengan información de cuartil
+                    if idx != -1:
+                        cat_name = cat_item[:idx].strip()
+                        categories_by_year[source_year][cat_name].append((rank, source_id))
 
         # 2. Verificar si la categoría se encuentra dentro del 10% superior
         top_10 = defaultdict(lambda: defaultdict(dict))
@@ -68,7 +70,7 @@ class SJRMapper:
                     if percentile_position <= 10.0:
                         top_10[source_id][source_year][cat_name] = round(percentile_position, 1)
 
-        # 3. Si corresponde al  10% superior, se agrega el porcentaje al diccionario del SJR
+        # 3. Si corresponde al 10% superior, se agrega el porcentaje al diccionario del SJR
         sjr_dict = defaultdict(dict)
 
         for source_id, years_data in sjr_base_data.items():
@@ -80,13 +82,19 @@ class SJRMapper:
                     for cat_item in cats_str.split(';'):
                         cat_item = cat_item.strip()
                         idx = cat_item.rfind(" (Q")
-                        cat_name = cat_item[:idx].strip() if idx != -1 else cat_item
 
-                        percentile_position = top_10.get(source_id, {}).get(source_year, {}).get(cat_name)
+                        # Procesar todas las categorías
+                        # Incluir en el cálculo del 10% superior para las que tienen cuartil
+                        if idx != -1:
+                            cat_name = cat_item[:idx].strip()
+                            percentile_position = top_10.get(source_id, {}).get(source_year, {}).get(cat_name)
 
-                        if percentile_position is not None:
-                            final_cats.append(f"{cat_item}[Categoría dentro del 10% superior ({percentile_position})]")
+                            if percentile_position is not None:
+                                final_cats.append(f"{cat_item}[Categoría dentro del 10% superior ({percentile_position})]")
+                            else:
+                                final_cats.append(cat_item)
                         else:
+                            # Categorías sin cuartil se muestran tal cual
                             final_cats.append(cat_item)
 
                     formatted_categories = "; ".join(final_cats)
