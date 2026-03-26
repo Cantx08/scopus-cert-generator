@@ -171,7 +171,7 @@ def GenerateCertificate(req: func.HttpRequest) -> func.HttpResponse:
             json.dumps({
                 "mensaje": f"{tipo_doc} generado exitosamente",
                 "pdf_base64": pdf_base64,
-                "nombre_archivo": f"Certificado Publicaciones - {title_aux} {author_data.get('nombres', 'Nombre')} {author_data.get('apellidos', 'Apellido')}.pdf"
+                "nombre_archivo": f"{tipo_doc} - {title_aux} {author_data.get('nombres', 'Nombre')} {author_data.get('apellidos', 'Apellido')}.pdf"
             }),
             mimetype="application/json",
             status_code=200
