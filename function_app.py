@@ -1,5 +1,6 @@
 """
-Azure Function principal para generar certificados en PDF basados en datos de Scopus y SJR.
+Azure Function principal para extraer datos de Scopus y generar certificados en PDF.
+Dividida en dos micro-servicios: Extracción y Generación.
 """
 
 import logging
@@ -20,59 +21,40 @@ app = func.FunctionApp(http_auth_level=func.AuthLevel.FUNCTION)
 # ==========================================
 # INICIALIZACIÓN GLOBAL (Cold Start)
 # ==========================================
-# Cargar el CSV pesado en la memoria global optimiza los tiempos de respuesta
 RUTA_SJR = os.environ.get("SJR_CSV_PATH", "df_sjr_24_04_2025.csv")
 
 sjr_mapper = None 
 try:
     sjr_mapper = SJRMapper(RUTA_SJR)
-    logging.info("SJR Mapper inicializado correctamente.")
+    logging.info("SJR Mapper inicializado correctamente en caché global.")
 except Exception as e:
     logging.error("Error crítico: No se pudo cargar el archivo SJR en caché: %s", str(e))
 
 
-@app.route(route="GenerateCertificate", methods=["POST"])
-async def GenerateCertificate(req: func.HttpRequest) -> func.HttpResponse:
+# ==========================================
+# FUNCIÓN 1: EXTRACCIÓN DE DATOS
+# ==========================================
+@app.route(route="ExtractScopusData", methods=["POST"])
+async def ExtractScopusData(req: func.HttpRequest) -> func.HttpResponse:
     """
-    Genera un certificado en formato PDF basado en los datos proporcionados.
+    Recibe los IDs de Scopus, consulta las APIs y cruza la data con el archivo SJR.
+    Retorna únicamente los datos (JSON) listos para ser oxaminados o cacheados.
     """
-    logging.info('Iniciando pipeline de generación de certificado.')
+    logging.info('Iniciando extracción de datos de Scopus.')
 
     try:
-        # 1. Validación de datos que se recibe para la generación del certificado
-        # El JSON debe tener la siguiente estructura: scopus_ids, author (información del autor),
-        # metadata (información del certificado) e is_draft que indica si es borrador o certificado final.
-        try:
-            req_body = req.get_json()
-        except ValueError:
-            return func.HttpResponse(json.dumps({"error": "El cuerpo de la solicitud debe ser un JSON válido."}), status_code=400, mimetype="application/json")
-
+        req_body = req.get_json()
         scopus_ids = req_body.get('scopus_ids', [])
-        author_data = req_body.get('author', {})
-        metadata = req_body.get('metadata', {})
-        is_draft = req_body.get('is_draft', True)
 
-        # Validaciones de integridad del payload
         if not scopus_ids or not isinstance(scopus_ids, list):
             return func.HttpResponse(json.dumps({"error": "Se requiere una lista válida de 'scopus_ids'."}), status_code=400, mimetype="application/json")
-        
-        if not author_data or not metadata:
-            return func.HttpResponse(json.dumps({"error": "Faltan datos en el objeto 'author' o 'metadata'."}), status_code=400, mimetype="application/json")
 
-        pdf_service = CertificadoPDFService()
-        try:
-            pdf_service.check_roles(author_data, metadata)
-        except ValueError as ve:
-            logging.warning(f"Validación de roles fallida: {ve}")
-            return func.HttpResponse(json.dumps({"error": str(ve)}), status_code=400, mimetype="application/json")
-
-        # 2. Extracción de publicaciones desde Scopus
         extractor = ScopusExtractor()
         async with AsyncClient(timeout=extractor.timeout) as client:
             tasks = [extractor.get_publications(sid, client) for sid in scopus_ids]
             pubs_results = await asyncio.gather(*tasks)
             
-            # Obtención de publicaciones
+            # Limpieza de duplicados por DOI
             all_publications = []
             seen_dois = set()
             for sublist in pubs_results:
@@ -85,20 +67,98 @@ async def GenerateCertificate(req: func.HttpRequest) -> func.HttpResponse:
                     else:
                         all_publications.append(pub)
             
-            # Obtención de áreas temáticas
+            # Obtener áreas temáticas
             subject_areas = await extractor.get_subject_areas(scopus_ids, client)
 
-        # 3. Agregar datos de SJR a las publicaciones
+        normalized_subject_areas = []
+        if isinstance(subject_areas, list):
+            for index, area in enumerate(subject_areas, start=1):
+                if not isinstance(area, dict):
+                    area = {}
+
+                area_name = (
+                    area.get("subject_area")
+                    or area.get("name")
+                    or area.get("area")
+                    or area.get("nombre")
+                    or f"Area {index}"
+                )
+                try:
+                    area_documents = int(
+                        area.get("documents", area.get("count", area.get("cantidad", area.get("value", 0))))
+                    )
+                except (TypeError, ValueError):
+                    area_documents = 0
+
+                normalized_subject_areas.append({
+                    **area,
+                    "name": area_name,
+                    "count": area_documents,
+                    "subject_area": area_name,
+                    "documents": area_documents,
+                })
+
+        # Mapeo con SJR
         if sjr_mapper:
             all_publications = sjr_mapper.map_publications(all_publications)
-        else:
-            logging.warning("Ocurrió un error al inicializar el SJR Mapper. Se generará sin datos SJR.")
 
-        # 4. Generación de PDF
+        return func.HttpResponse(
+            json.dumps({
+                "mensaje": "Datos extraídos correctamente",
+                "total_publicaciones": len(all_publications),
+                "publications": all_publications,
+                "subject_areas": normalized_subject_areas
+            }),
+            mimetype="application/json",
+            status_code=200
+        )
+
+    except Exception as e:
+        logging.error("Error en extracción: %s", str(e), exc_info=True)
+        return func.HttpResponse(json.dumps({"error": f"Error interno en extracción: {str(e)}"}), status_code=500, mimetype="application/json")
+
+
+# ==========================================
+# FUNCIÓN 2: GENERACIÓN DE PDF
+# ==========================================
+@app.route(route="GenerateCertificate", methods=["POST"])
+def GenerateCertificate(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Recibe el JSON previamente extraído de Scopus junto con los datos visuales
+    (firmantes, fechas, memorandos) y genera el documento PDF al instante.
+    """
+    logging.info('Iniciando generación de PDF (Endpoint 2).')
+
+    try:
+        req_body = req.get_json()
+        
+        # Obtenemos todos los datos desde el body
+        author_data = req_body.get('author', {})
+        metadata = req_body.get('metadata', {})
+        publications = req_body.get('publications', [])
+        subject_areas = req_body.get('subject_areas', [])
+        is_draft = req_body.get('is_draft', True)
+
+        # Validaciones de integridad en los datos recibidos
+        if not author_data or not metadata:
+            return func.HttpResponse(json.dumps({"error": "Faltan datos en el objeto 'author' o 'metadata'."}), status_code=400, mimetype="application/json")
+
+        if not publications:
+            return func.HttpResponse(json.dumps({"error": "La lista de publicaciones está vacía. Debe extraer los datos primero."}), status_code=400, mimetype="application/json")
+
+        # Validación de roles
+        pdf_service = CertificadoPDFService()
+        try:
+            pdf_service.check_roles(author_data, metadata)
+        except ValueError as ve:
+            logging.warning(f"Validación de roles fallida: {ve}")
+            return func.HttpResponse(json.dumps({"error": str(ve)}), status_code=400, mimetype="application/json")
+
+        # Generación de PDF (Puro procesamiento de CPU, sin red)
         pdf_bytes = pdf_service.generate_pdf(
             author=author_data,
             metadata=metadata,
-            publications=all_publications,
+            publications=publications,
             subject_areas=subject_areas,
             is_draft=is_draft
         )
@@ -106,19 +166,17 @@ async def GenerateCertificate(req: func.HttpRequest) -> func.HttpResponse:
         pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
         tipo_doc = "Borrador" if is_draft else "Certificado Final"
         title_aux = author_data.get('titulo', '').replace('.', '').strip()
-        file_type = "Borrador Publicaciones" if is_draft else "Certificado Publicaciones"
 
         return func.HttpResponse(
             json.dumps({
                 "mensaje": f"{tipo_doc} generado exitosamente",
-                "total_publicaciones": len(all_publications),
                 "pdf_base64": pdf_base64,
-                "nombre_archivo": f"{file_type} - {title_aux} {author_data.get('nombres', 'Nombre')} {author_data.get('apellidos', 'Apellido')}.pdf"
+                "nombre_archivo": f"Certificado Publicaciones - {title_aux} {author_data.get('nombres', 'Nombre')} {author_data.get('apellidos', 'Apellido')}.pdf"
             }),
             mimetype="application/json",
             status_code=200
         )
 
     except Exception as e:
-        logging.error("Error en el pipeline principal: %s", str(e), exc_info=True)
-        return func.HttpResponse(json.dumps({"error": f"Error interno del servidor: {str(e)}"}), status_code=500, mimetype="application/json")
+        logging.error("Error en generación PDF: %s", str(e), exc_info=True)
+        return func.HttpResponse(json.dumps({"error": f"Error interno en generación: {str(e)}"}), status_code=500, mimetype="application/json")

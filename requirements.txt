@@ -9,3 +9,4 @@ reportlab
 pypdf
 azure-core
 matplotlib
+asyncio
