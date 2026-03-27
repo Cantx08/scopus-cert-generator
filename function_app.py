@@ -15,6 +15,7 @@ from httpx import AsyncClient
 from services.scopus_service import ScopusExtractor
 from services.sjr_service import SJRMapper
 from services.pdf_service import CertificadoPDFService
+from services.author_service import AuthorManager
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.FUNCTION)
 
@@ -180,3 +181,44 @@ def GenerateCertificate(req: func.HttpRequest) -> func.HttpResponse:
     except Exception as e:
         logging.error("Error en generación PDF: %s", str(e), exc_info=True)
         return func.HttpResponse(json.dumps({"error": f"Error interno en generación: {str(e)}"}), status_code=500, mimetype="application/json")
+    
+# ==========================================
+# FUNCIÓN 3: GESTIÓN DE AUTORES
+# ==========================================
+@app.route(route="ManageAuthors", methods=["GET", "POST", "PUT"])
+def ManageAuthors(req: func.HttpRequest) -> func.HttpResponse:
+    method = req.method
+
+    author_manager = AuthorManager()
+
+    if method == "GET":
+        # Listar y filtrar
+        facultad = req.params.get('facultad')
+        departamento = req.params.get('departamento')
+        autores = author_manager.get_authors(facultad, departamento)
+        return func.HttpResponse(json.dumps(autores), mimetype="application/json", status_code=200)
+
+    elif method == "POST":
+        # Revisar si es una subida de CSV en bloque
+        content_type = req.headers.get("Content-Type", "")
+        
+        if "text/csv" in content_type or "multipart/form-data" in content_type:
+            # Lógica para CSV (requiere extraer el texto del archivo)
+            csv_content = req.get_body().decode('utf-8') 
+            resultado = author_manager.bulk_upload_authors(csv_content)
+            return func.HttpResponse(json.dumps(resultado), mimetype="application/json", status_code=200)
+        else:
+            # Lógica para crear un solo autor
+            req_body = req.get_json()
+            resultado = author_manager.upsert_author(req_body)
+            return func.HttpResponse(json.dumps(resultado), mimetype="application/json", status_code=201)
+
+    elif method == "PUT":
+        # Lógica para actualizar (cambio de título, cargo, nuevos Scopus IDs)
+        # Table Storage usa la misma lógica para crear o actualizar (upsert)
+        req_body = req.get_json()
+        if not req_body.get('id'):
+            return func.HttpResponse("Falta el 'id' del autor para actualizar", status_code=400)
+            
+        resultado = author_manager.upsert_author(req_body)
+        return func.HttpResponse(json.dumps(resultado), mimetype="application/json", status_code=200)
