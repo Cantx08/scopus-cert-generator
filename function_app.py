@@ -13,6 +13,7 @@ from httpx import AsyncClient
 
 # Importamos nuestros módulos limpios
 from services.department_service import DepartmentManager
+from services.job_position_service import JobPositionManager
 from services.scopus_service import ScopusExtractor
 from services.sjr_service import SJRMapper
 from services.pdf_service import CertificadoPDFService
@@ -240,3 +241,12 @@ def GetDepartments(req: func.HttpRequest) -> func.HttpResponse:
     except Exception as e:
         return func.HttpResponse(json.dumps({"error": str(e)}), mimetype="application/json", status_code=500)
     
+
+@app.route(route="GetJobPositions", methods=["GET"])
+def GetJobPositions(req: func.HttpRequest) -> func.HttpResponse:
+    try:
+        job_position_manager = JobPositionManager()
+        cargos = job_position_manager.get_job_positions()
+        return func.HttpResponse(json.dumps(cargos), mimetype="application/json", status_code=200)
+    except Exception as e:
+        return func.HttpResponse(json.dumps({"error": str(e)}), mimetype="application/json", status_code=500)
