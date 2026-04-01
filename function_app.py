@@ -12,6 +12,7 @@ import azure.functions as func
 from httpx import AsyncClient
 
 # Importamos nuestros módulos limpios
+from services.department_service import DepartmentManager
 from services.scopus_service import ScopusExtractor
 from services.sjr_service import SJRMapper
 from services.pdf_service import CertificadoPDFService
@@ -32,9 +33,6 @@ except Exception as e:
     logging.error("Error crítico: No se pudo cargar el archivo SJR en caché: %s", str(e))
 
 
-# ==========================================
-# FUNCIÓN 1: EXTRACCIÓN DE DATOS
-# ==========================================
 @app.route(route="ExtractScopusData", methods=["POST"])
 async def ExtractScopusData(req: func.HttpRequest) -> func.HttpResponse:
     """
@@ -119,9 +117,6 @@ async def ExtractScopusData(req: func.HttpRequest) -> func.HttpResponse:
         return func.HttpResponse(json.dumps({"error": f"Error interno en extracción: {str(e)}"}), status_code=500, mimetype="application/json")
 
 
-# ==========================================
-# FUNCIÓN 2: GENERACIÓN DE PDF
-# ==========================================
 @app.route(route="GenerateCertificate", methods=["POST"])
 def GenerateCertificate(req: func.HttpRequest) -> func.HttpResponse:
     """
@@ -182,9 +177,7 @@ def GenerateCertificate(req: func.HttpRequest) -> func.HttpResponse:
         logging.error("Error en generación PDF: %s", str(e), exc_info=True)
         return func.HttpResponse(json.dumps({"error": f"Error interno en generación: {str(e)}"}), status_code=500, mimetype="application/json")
     
-# ==========================================
-# FUNCIÓN 3: GESTIÓN DE AUTORES
-# ==========================================
+
 @app.route(route="ManageAuthors", methods=["GET", "POST", "PUT"])
 def ManageAuthors(req: func.HttpRequest) -> func.HttpResponse:
     method = req.method
@@ -195,7 +188,7 @@ def ManageAuthors(req: func.HttpRequest) -> func.HttpResponse:
         # Listar y filtrar
         facultad = req.params.get('facultad')
         departamento = req.params.get('departamento')
-        autores = author_manager.get_authors(facultad, departamento)
+        autores = author_manager.get_authors(departamento, facultad)
         return func.HttpResponse(json.dumps(autores), mimetype="application/json", status_code=200)
 
     elif method == "POST":
@@ -222,3 +215,28 @@ def ManageAuthors(req: func.HttpRequest) -> func.HttpResponse:
             
         resultado = author_manager.upsert_author(req_body)
         return func.HttpResponse(json.dumps(resultado), mimetype="application/json", status_code=200)
+
+
+@app.route(route="GetFaculties", methods=["GET"])
+def GetFaculties(req: func.HttpRequest) -> func.HttpResponse:
+    
+    department_manager = DepartmentManager()
+
+
+    try:
+        facultades = department_manager.get_facultades()
+        return func.HttpResponse(json.dumps(facultades), mimetype="application/json", status_code=200)
+    except Exception as e:
+        return func.HttpResponse(json.dumps({"error": str(e)}), mimetype="application/json", status_code=500)
+
+
+@app.route(route="GetDepartments", methods=["GET"])
+def GetDepartments(req: func.HttpRequest) -> func.HttpResponse:
+    try:
+        facultad = req.params.get('facultad')
+        department_manager = DepartmentManager()
+        departamentos = department_manager.get_departments(facultad)
+        return func.HttpResponse(json.dumps(departamentos), mimetype="application/json", status_code=200)
+    except Exception as e:
+        return func.HttpResponse(json.dumps({"error": str(e)}), mimetype="application/json", status_code=500)
+    

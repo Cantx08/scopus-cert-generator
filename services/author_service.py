@@ -1,7 +1,9 @@
-import pandas as pd
-from azure.data.tables import TableClient
-from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
 import os
+import uuid
+
+import pandas as pd
+from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
+from azure.data.tables import TableClient
 
 TABLE_NAME = "Autores"
 DEFAULT_PARTITION = "Docente"
@@ -21,30 +23,74 @@ class AuthorManager:
 
         return client
 
+    @staticmethod
+    def _sanitize(value):
+        if value is None:
+            return ""
+
+        text = str(value).strip()
+        return "" if text.lower() == "nan" else text
+
+    @staticmethod
+    def _is_valid_uuid(value):
+        try:
+            uuid.UUID(str(value))
+            return True
+        except (TypeError, ValueError):
+            return False
+
+    def _build_author_entity(self, author_id, data):
+        return {
+            "PartitionKey": DEFAULT_PARTITION,
+            "RowKey": author_id,
+            "Nombres": self._sanitize(data.get('nombres', '')),
+            "Apellidos": self._sanitize(data.get('apellidos', '')),
+            "Titulo": self._sanitize(data.get('titulo', '')),
+            "Cargo": self._sanitize(data.get('cargo', '')),
+            "Departamento": self._sanitize(data.get('departamento', '')),
+            "Facultad": self._sanitize(data.get('facultad', '')),
+            "ScopusIds": self._sanitize(data.get('scopus_ids', '')),
+        }
+
+    @staticmethod
+    def _build_author_response(entity):
+        return {
+            "id": entity["RowKey"],
+            "nombres": entity.get("Nombres", ""),
+            "apellidos": entity.get("Apellidos", ""),
+            "titulo": entity.get("Titulo", ""),
+            "cargo": entity.get("Cargo", ""),
+            "departamento": entity.get("Departamento", ""),
+            "facultad": entity.get("Facultad", ""),
+            "scopus_ids": entity.get("ScopusIds", ""),
+        }
+
+    def _ensure_uuid_row_key(self, client, entity):
+        current_row_key = entity["RowKey"]
+        if self._is_valid_uuid(current_row_key):
+            return entity
+
+        migrated_entity = dict(entity)
+        migrated_entity["RowKey"] = str(uuid.uuid4())
+        client.upsert_entity(entity=migrated_entity)
+        client.delete_entity(partition_key=entity["PartitionKey"], row_key=current_row_key)
+        return migrated_entity
+
     def upsert_author(self, data):
         client = self.get_table_client()
 
-        dni = data.get('cedula')
-        if not dni:
-            raise ValueError("El DNI/Cédula es obligatorio para registrar al docente.")
-            
-        entity = {
-            "PartitionKey": DEFAULT_PARTITION,
-            "RowKey": str(dni).strip(),
-            "Nombres": data.get('nombres', ''),
-            "Apellidos": data.get('apellidos', ''),
-            "Titulo": data.get('titulo', ''),
-            "Cargo": data.get('cargo', ''),
-            "Departamento": data.get('departamento', ''),
-            "Facultad": data.get('facultad', ''), # Añadido para permitir el filtro que mencionaste
-            "ScopusIds": data.get('scopus_ids', '') 
-        }
-        
-        # upsert_entity actualiza si la cédula ya existe, o crea si es nueva
-        client.upsert_entity(entity=entity)
-        return {"mensaje": "Autor guardado/actualizado correctamente", "cedula": dni}
+        author_id = self._sanitize(data.get('id', ''))
+        if author_id and not self._is_valid_uuid(author_id):
+            raise ValueError("El campo 'id' debe ser un UUID válido.")
 
-    # R (Read) - Listar y Filtrar
+        if not author_id:
+            author_id = str(uuid.uuid4())
+
+        entity = self._build_author_entity(author_id, data)
+        
+        client.upsert_entity(entity=entity)
+        return {"mensaje": "Autor guardado/actualizado correctamente", "id": author_id}
+
     def get_authors(self, departamento=None, facultad=None):
         client = self.get_table_client()
         query_filters = [f"PartitionKey eq '{DEFAULT_PARTITION}'"]
@@ -59,28 +105,18 @@ class AuthorManager:
             
         autores = []
         for e in entities:
-            autores.append({
-                "cedula": e["RowKey"],
-                "nombres": e.get("Nombres", ""),
-                "apellidos": e.get("Apellidos", ""),
-                "titulo": e.get("Titulo", ""),
-                "cargo": e.get("Cargo", ""),
-                "departamento": e.get("Departamento", ""),
-                "facultad": e.get("Facultad", ""),
-                "scopus_ids": e.get("ScopusIds", "")
-            })
+            normalized_entity = self._ensure_uuid_row_key(client, e)
+            autores.append(self._build_author_response(normalized_entity))
         return autores
 
-    # D (Delete) - Eliminar un autor
-    def delete_author(self, cedula):
+    def delete_author(self, author_id):
         client = self.get_table_client()
         try:
-            client.delete_entity(partition_key=DEFAULT_PARTITION, row_key=str(cedula).strip())
-            return {"mensaje": f"Autor con cédula {cedula} eliminado correctamente."}
+            client.delete_entity(partition_key=DEFAULT_PARTITION, row_key=str(author_id).strip())
+            return {"mensaje": f"Autor con id {author_id} eliminado correctamente."}
         except ResourceNotFoundError:
             return {"error": "Autor no encontrado."}
 
-    # Carga Masiva (CSV)
     def bulk_upload_authors(self, csv_content):
         from io import StringIO
         df = pd.read_csv(StringIO(csv_content))
@@ -88,21 +124,24 @@ class AuthorManager:
         
         procesados = 0
         for _, row in df.iterrows():
-            # Validar que la fila tenga cédula
-            cedula = str(row.get('Cedula', '')).strip()
-            if not cedula or cedula == 'nan':
+            nombres = self._sanitize(row.get('Nombres', ''))
+            apellidos = self._sanitize(row.get('Apellidos', ''))
+            if not nombres and not apellidos:
                 continue
-                
+
+            imported_id = self._sanitize(row.get('Id', ''))
+            author_id = imported_id if self._is_valid_uuid(imported_id) else str(uuid.uuid4())
+
             entity = {
                 "PartitionKey": DEFAULT_PARTITION,
-                "RowKey": cedula,
-                "Nombres": str(row.get('Nombres', '')),
-                "Apellidos": str(row.get('Apellidos', '')),
-                "Titulo": str(row.get('Titulo', '')),
-                "Cargo": str(row.get('Cargo', '')),
-                "Departamento": str(row.get('Departamento', '')),
-                "Facultad": str(row.get('Facultad', '')),
-                "ScopusIds": str(row.get('ScopusIds', ''))
+                "RowKey": author_id,
+                "Nombres": nombres,
+                "Apellidos": apellidos,
+                "Titulo": self._sanitize(row.get('Titulo', '')),
+                "Cargo": self._sanitize(row.get('Cargo', '')),
+                "Departamento": self._sanitize(row.get('Departamento', '')),
+                "Facultad": self._sanitize(row.get('Facultad', '')),
+                "ScopusIds": self._sanitize(row.get('ScopusIds', '')),
             }
             client.upsert_entity(entity=entity)
             procesados += 1
