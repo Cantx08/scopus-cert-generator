@@ -32,6 +32,20 @@ class AuthorManager:
         return "" if text.lower() == "nan" else text
 
     @staticmethod
+    def _normalize_csv_header(value):
+        normalized = str(value).strip().lower()
+        translation_table = str.maketrans("áéíóúäëïöüñ", "aeiouaeioun")
+        normalized = normalized.translate(translation_table)
+        return "".join(char for char in normalized if char.isalnum())
+
+    @staticmethod
+    def _normalize_gender(value):
+        normalized = AuthorManager._sanitize(value).upper()
+        if normalized in {"F"}:
+            return "F"
+        return "M"
+
+    @staticmethod
     def _is_valid_uuid(value):
         try:
             uuid.UUID(str(value))
@@ -46,6 +60,7 @@ class AuthorManager:
             "Nombres": self._sanitize(data.get('nombres', '')),
             "Apellidos": self._sanitize(data.get('apellidos', '')),
             "Titulo": self._sanitize(data.get('titulo', '')),
+            "Genero": self._normalize_gender(data.get('genero', 'M')),
             "Cargo": self._sanitize(data.get('cargo', '')),
             "Departamento": self._sanitize(data.get('departamento', '')),
             "Facultad": self._sanitize(data.get('facultad', '')),
@@ -59,6 +74,7 @@ class AuthorManager:
             "nombres": entity.get("Nombres", ""),
             "apellidos": entity.get("Apellidos", ""),
             "titulo": entity.get("Titulo", ""),
+            "genero": entity.get("Genero", "M"),
             "cargo": entity.get("Cargo", ""),
             "departamento": entity.get("Departamento", ""),
             "facultad": entity.get("Facultad", ""),
@@ -119,17 +135,38 @@ class AuthorManager:
 
     def bulk_upload_authors(self, csv_content):
         from io import StringIO
-        df = pd.read_csv(StringIO(csv_content))
+        df = pd.read_csv(
+            StringIO(csv_content),
+            sep=None,
+            engine="python",
+            dtype=str,
+            keep_default_na=False,
+        )
         client = self.get_table_client()
+
+        header_map = {
+            self._normalize_csv_header(column_name): column_name
+            for column_name in df.columns
+        }
+
+        def get_row_value(row, *aliases):
+            for alias in aliases:
+                column_name = header_map.get(alias)
+                if column_name is not None:
+                    return self._sanitize(row.get(column_name, ''))
+            return ""
+
+        if "nombres" not in header_map or "apellidos" not in header_map:
+            raise ValueError("El CSV debe incluir las columnas 'Nombres' y 'Apellidos'.")
         
         procesados = 0
         for _, row in df.iterrows():
-            nombres = self._sanitize(row.get('Nombres', ''))
-            apellidos = self._sanitize(row.get('Apellidos', ''))
+            nombres = get_row_value(row, "nombres")
+            apellidos = get_row_value(row, "apellidos")
             if not nombres and not apellidos:
                 continue
 
-            imported_id = self._sanitize(row.get('Id', ''))
+            imported_id = get_row_value(row, "id")
             author_id = imported_id if self._is_valid_uuid(imported_id) else str(uuid.uuid4())
 
             entity = {
@@ -137,11 +174,12 @@ class AuthorManager:
                 "RowKey": author_id,
                 "Nombres": nombres,
                 "Apellidos": apellidos,
-                "Titulo": self._sanitize(row.get('Titulo', '')),
-                "Cargo": self._sanitize(row.get('Cargo', '')),
-                "Departamento": self._sanitize(row.get('Departamento', '')),
-                "Facultad": self._sanitize(row.get('Facultad', '')),
-                "ScopusIds": self._sanitize(row.get('ScopusIds', '')),
+                "Titulo": get_row_value(row, "titulo"),
+                "Genero": self._normalize_gender(get_row_value(row, "genero")),
+                "Cargo": get_row_value(row, "cargo"),
+                "Departamento": get_row_value(row, "departamento"),
+                "Facultad": get_row_value(row, "facultad"),
+                "ScopusIds": get_row_value(row, "scopusids"),
             }
             client.upsert_entity(entity=entity)
             procesados += 1
