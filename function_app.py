@@ -179,7 +179,7 @@ def GenerateCertificate(req: func.HttpRequest) -> func.HttpResponse:
         return func.HttpResponse(json.dumps({"error": f"Error interno en generación: {str(e)}"}), status_code=500, mimetype="application/json")
     
 
-@app.route(route="ManageAuthors", methods=["GET", "POST", "PUT"])
+@app.route(route="ManageAuthors", methods=["GET", "POST", "PUT", "DELETE"])
 def ManageAuthors(req: func.HttpRequest) -> func.HttpResponse:
     method = req.method
 
@@ -208,14 +208,24 @@ def ManageAuthors(req: func.HttpRequest) -> func.HttpResponse:
             return func.HttpResponse(json.dumps(resultado), mimetype="application/json", status_code=201)
 
     elif method == "PUT":
-        # Lógica para actualizar (cambio de título, cargo, nuevos Scopus IDs)
-        # Table Storage usa la misma lógica para crear o actualizar (upsert)
+        # Lógica para actualizar un autor
         req_body = req.get_json()
         if not req_body.get('id'):
             return func.HttpResponse("Falta el 'id' del autor para actualizar", status_code=400)
             
         resultado = author_manager.upsert_author(req_body)
         return func.HttpResponse(json.dumps(resultado), mimetype="application/json", status_code=200)
+    
+    elif method == "DELETE":
+        # Lógica para eliminar un autor
+        author_id = req.params.get('id')
+        if not author_id:
+            return func.HttpResponse("Falta el 'id' del autor para eliminar", status_code=400)
+        
+        resultado = author_manager.delete_author(author_id)
+        status_code = 200 if "mensaje" in resultado else 404
+        return func.HttpResponse(json.dumps(resultado), mimetype="application/json", status_code=status_code)
+
 
 
 @app.route(route="GetFaculties", methods=["GET"])
